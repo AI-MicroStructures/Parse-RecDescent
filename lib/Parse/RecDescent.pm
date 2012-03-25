@@ -461,6 +461,7 @@ sub ' . $namespace . '::' . $self->{"name"} .  '
     my $text;
     my $lastsep;
     my $current_match;
+    my $_current_production_left_recursion_states;
     my $expectation = new Parse::RecDescent::Expectation(q{' . $self->expected() . '});
     $expectation->at($_[1]);
     '. ($parser->{_check}{thisoffset}?'
@@ -869,10 +870,42 @@ sub code($$$$)
     my ($self,$namespace,$rule,$parser) = @_;
     my $code =
 '
+    undef $_current_production_left_recursion_states;
+  THISPROD:
     while (!$_matched'
     . (defined $self->{"uncommit"} ? '' : ' && !$commit')
     . ')
     {
+';
+
+    if ($parser->{_EXPERIMENTAL}{'leftrecurse'}) {
+        $code .= '
+        {
+            my $production_key = q{' . $rule->{name} . ' : ' . $self->describe . '};
+            if ( not exists $thisparser->{_leftrecurse}{$production_key} ) {
+                $thisparser->{_leftrecurse}{$production_key} = [];
+            }
+            $_current_production_left_recursion_states =
+                $thisparser->{_leftrecurse}{$production_key};
+            if (@$_current_production_left_recursion_states
+                and ($_current_production_left_recursion_states->[-1][0] eq $text
+                     or $_current_production_left_recursion_states->[-1][0] eq $_[1])) {
+                $expectation->failed();
+                Parse::RecDescent::_trace(q{Left recursion, skipping: ['
+                              . $self->describe . ']},
+                              Parse::RecDescent::_tracefirst($_[1]),
+                              q{' . $rule ->{name}. '},
+                              $tracelevel)
+                                if defined $::RD_TRACE;
+                undef $_current_production_left_recursion_states;
+                last THISPROD;
+            }
+            push @$_current_production_left_recursion_states, [ $text || $_[1], $tracelevel ];
+        }
+';
+    }
+
+    $code .= '
         ' .
         ($self->changesskip()
             ? 'local $skip = defined($skip) ? $skip : $Parse::RecDescent::skip;'
@@ -964,6 +997,9 @@ sub code($$$$)
         last;
     }
 
+    if (defined $_current_production_left_recursion_states) {
+        my $out = pop @$_current_production_left_recursion_states
+    }
 ';
     return $code;
 }
@@ -2054,6 +2090,7 @@ my $REJECTMK        =  '\G\s*<reject>';
 my $CONDREJECTMK    =  '\G\s*<reject:';
 my $SCOREMK         =  '\G\s*<score:';
 my $AUTOSCOREMK     =  '\G\s*<autoscore:';
+my $EXPERIMENTALMK  =  '\G\s*<experimental:(\w+)>';
 my $SKIPMK          =  '\G\s*<skip:';
 my $OPMK            =  '\G\s*<(left|right)op(?:=(\'.*?\'))?:';
 my $ENDDIRECTIVEMK  =  '\G\s*>';
@@ -2335,6 +2372,12 @@ sub _generate
                 $item = new Parse::RecDescent::UncondReject($lookahead,$line,$code);
                 $prod and $prod->additem($item)
                       or  _no_rule($code,$line);
+            }
+            elsif ($grammar =~ m/$EXPERIMENTALMK/gco)
+            {
+                my $flag = lc $1;
+                _parse("an experimental flag \"$flag\"", $aftererror,$line, substr($grammar, $-[0], $+[0] - $-[0]) );
+                $self->{_EXPERIMENTAL}{$flag} = 1;
             }
             elsif ($grammar =~ m/$RESYNCMK/gco)
             {
@@ -3015,7 +3058,8 @@ sub _check_grammar ($)
 
     # CHECK FOR LEFT RECURSION
 
-        if ($rule->isleftrec($rules))
+        if (( not $self->{_EXPERIMENTAL}{'leftrecurse'} )
+            and $rule->isleftrec($rules))
         {
             _error("Rule \"$rule->{name}\" is left-recursive.");
             _hint("Redesign the grammar so it's not left-recursive.
@@ -3652,11 +3696,13 @@ A subrule which appears in a production is an instruction to the parser to
 attempt to match the named rule at that point in the text being
 parsed. If the named subrule is not defined when requested the
 production containing it immediately fails (unless it was "autostubbed" - see
-L<Autostubbing>).
+L</Autostubbing>).
 
-A rule may (recursively) call itself as a subrule, but I<not> as the
-left-most item in any of its productions (since such recursions are usually
-non-terminating).
+A rule may (recursively) call itself as a subrule but I<not> as the
+left-most item in any of its productions (since such recursions are
+usually non-terminating).  The C<E<lt>experimental:leftrecurseE<gt>>
+directive generates parsers that do allow left-recursion, see
+L</"Support for left recursion"> for more details.
 
 The value associated with a subrule is the value associated with its
 C<$return> variable (see L<"Actions"> below), or with the last successfully
@@ -4508,12 +4554,16 @@ get the disaster you deserve :-).
 =head2 Directives
 
 Directives are special pre-defined actions which may be used to alter
-the behaviour of the parser. There are currently twenty-three directives:
+the behaviour of the parser. There are currently twenty-seven directives:
 C<E<lt>commitE<gt>>,
 C<E<lt>uncommitE<gt>>,
 C<E<lt>rejectE<gt>>,
 C<E<lt>scoreE<gt>>,
 C<E<lt>autoscoreE<gt>>,
+C<E<lt>autoactionE<gt>>,
+C<E<lt>autotreeE<gt>>,
+C<E<lt>autostubE<gt>>,
+C<E<lt>autoruleE<gt>>,
 C<E<lt>skipE<gt>>,
 C<E<lt>resyncE<gt>>,
 C<E<lt>errorE<gt>>,
@@ -4527,11 +4577,11 @@ C<E<lt>matchruleE<gt>>,
 C<E<lt>leftopE<gt>>,
 C<E<lt>rightopE<gt>>,
 C<E<lt>deferE<gt>>,
-C<E<lt>nocheckE<gt>>,
 C<E<lt>perl_quotelikeE<gt>>,
 C<E<lt>perl_codeblockE<gt>>,
 C<E<lt>perl_variableE<gt>>,
-and C<E<lt>tokenE<gt>>.
+C<E<lt>tokenE<gt>>,
+and C<E<lt>experimental<gt>>.
 
 =over 4
 
@@ -5707,8 +5757,71 @@ of the current grammar.
 Typically, this directive would be added when a parser has been thoroughly
 tested and is ready for release.
 
+
+=item Experimental features
+
+Parse::RecDescent adds new experimental parser generation features via
+the C<E<lt>experimental:...E<gt>> directive.  These features may
+change at any time as they are developed.
+
+=over 4
+
+=item Support for left recursion
+
+The C<E<lt>experimental:leftrecurseE<gt>>> directive provides
+support for left-recursive grammars.  If enabled, every production
+match attempt records its position in the input text.  If that
+production attempts to match at the same location in the input text,
+the recursive production will fail immediately, allowing the next
+production in the rule to attempt a match. An example grammar that
+functions with this directive follows.
+
+    use Parse::RecDescent;
+
+    my $grammar = <<'EOG';
+    <experimental:leftrecurse>
+
+    expression :
+      expression /([*\/+\-])/ expression
+        { $return = [ @{$item[1]}, $item[2], @{$item[3]} ] }
+    | '(' <commit> expression ')'
+        { $return = [ ::exp_eval($item[3]) ] }
+    | /\d*(\.\d+)|\d+/
+        { $return = [ $item[1] ] }
+
+    EOG
+    my $parser = Parse::RecDescent->new($grammar);
+
+    my @operators = (
+        ['*', '/'],
+        ['+', '-'],
+    );
+
+    sub exp_eval {
+        my $e = shift;
+
+        my @elems = @$e;
+
+        foreach my $opset (@operators) {
+            for (my $op_index = 1; $op_index < @elems; $op_index += 2) {
+                my ($left, $op, $right) = @elems[($op_index-1)..($op_index+1)];
+                if (grep { $op eq $_ } @$opset) {
+                    my $result = eval qq{$left $op $right};
+                    splice(@elems,$op_index-1,3,$result);
+                    $op_index -= 2;
+                }
+            }
+        }
+        die "Bad eval: ",Dumper(\@elems),"\n" unless 1 == @elems;
+        $elems[0];
+    }
+
+    print "Result: ",exp_eval($parser->expression('1-2*4+((8-2)*3)+1+6*5')),"\n";
+
+
 =back
 
+=back
 
 =head2 Subrule argument lists
 
@@ -6208,7 +6321,9 @@ Lookahead used in the wrong place or in a nonsensical way (fatal error).
 
 =item *
 
-"Obvious" cases of left-recursion (fatal error).
+"Obvious" cases of left-recursion, unless the
+C<E<lt>experimental:leftrecurseE<gt>> directive is supplied (fatal
+error).
 
 =item *
 

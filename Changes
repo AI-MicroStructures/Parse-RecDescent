@@ -795,3 +795,11 @@ Revision history for Parse-RecDescent
 1.967009      Fri Mar 16 07:25:09 2012
 
       - Bumped version to 1.967009 for non-development release.
+
+NEXT_VERSION   NEXT_RELEASE_DATE
+
+      - Minor POD fixes.
+
+      - Add <experimental:...> directive.
+
+      - Add <experimental:leftrecusion> feature.
